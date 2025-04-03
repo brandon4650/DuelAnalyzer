@@ -9,6 +9,7 @@ DuelAnalyzer.tooltipCache = {}
 DuelAnalyzer.tooltipCacheTime = {}
 
 local SCOUTER_TEXTURE = "Interface\\AddOns\\DuelAnalyzer\\scouter.tga"
+local FALLBACK_TEXTURE = "Interface\\DialogFrame\\UI-DialogBox-Gold-Dragon"
 local BEEP_SOUND = "Sound\\Interface\\MapPing.ogg"
 local LEVEL_UP_SOUND = "Sound\\Interface\\LevelUp.ogg"
 
@@ -184,6 +185,13 @@ function DuelAnalyzer:OnLoad()
     -- Create UI frame
     self:CreateAnalyzerUI()
     
+    -- Initialize tooltip functionality
+    self.tooltipCache = {}
+    self.tooltipCacheTime = {}
+    
+    -- Create the scouter frame on load
+    self:CreateScouterFrame()
+    
     -- Create a timer to clear the tooltip cache
     local cacheClearTimer = CreateFrame("Frame")
     cacheClearTimer:SetScript("OnUpdate", function(self, elapsed)
@@ -193,6 +201,14 @@ function DuelAnalyzer:OnLoad()
                 DuelAnalyzer:ClearTooltipCache()
             end
             self.elapsed = 0
+        end
+    end)
+    
+    -- Hook GameTooltip
+    GameTooltip:HookScript("OnTooltipSetUnit", function(self)
+        local _, unit = self:GetUnit()
+        if unit and DuelAnalyzerDB and DuelAnalyzerDB.settings and DuelAnalyzerDB.settings.showTooltip then
+            DuelAnalyzer:AnalyzeTooltipUnit(unit)
         end
     end)
 end
@@ -1315,7 +1331,6 @@ function DuelAnalyzer:QuickWinChance(unit)
             levelModifier = math.max(levelModifier, -40)
         end
     end
-    
     -- Quick gear estimate (just compare visible items)
     local playerGearScore = 0
     local opponentGearScore = 0
@@ -1357,6 +1372,7 @@ function DuelAnalyzer:QuickWinChance(unit)
     end
     
     -- Calculate history modifier
+    -- Calculate history modifier
     local historyModifier = 0
     if duelHistory[name] then
         local history = duelHistory[name]
@@ -1388,7 +1404,7 @@ function DuelAnalyzer:CreateScouterFrame()
     local frame = CreateFrame("Frame", "DuelAnalyzerScouter", UIParent)
     frame:SetSize(225, 225)
     frame:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
-    frame:SetFrameStrata("HIGH")
+    frame:SetFrameStrata("DIALOG") -- Higher strata to ensure visibility
     frame:SetMovable(true)
     frame:EnableMouse(true)
     frame:RegisterForDrag("LeftButton")
@@ -1399,7 +1415,16 @@ function DuelAnalyzer:CreateScouterFrame()
     -- Background texture (DBZ Scouter)
     local bg = frame:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints(true)
+    -- Try to use the scouter texture
     bg:SetTexture(SCOUTER_TEXTURE)
+    
+    -- Check if texture loaded correctly, use fallback if not
+    C_Timer.After(0.1, function()
+        if not bg:GetTexture() then
+            print("|cFFFF0000[Duel Analyzer]|r WARNING: Could not load scouter texture, using fallback")
+            bg:SetTexture(FALLBACK_TEXTURE)
+        end
+    end)
     
     -- Create a semi-transparent black background for text
     local textBg = frame:CreateTexture(nil, "ARTWORK")
@@ -1418,26 +1443,39 @@ function DuelAnalyzer:CreateScouterFrame()
     nameText:SetPoint("CENTER", frame, "CENTER", 0, -10)
     nameText:SetText("")
     
-    -- Scanning animation group
-    local scanAnim = frame:CreateAnimationGroup()
-    scanAnim:SetLooping("REPEAT")
+    -- Create a simpler animation system that works in MoP
+    -- Instead of using animation groups which seem to be causing issues
+    frame.flashTimer = 0
+    frame.flashState = true
+    frame.flashSpeed = 0.5
     
-    local fadeOut = scanAnim:CreateAnimation("Alpha")
-    fadeOut:SetFromAlpha(1)
-    fadeOut:SetToAlpha(0.3)
-    fadeOut:SetDuration(0.5)
-    fadeOut:SetOrder(1)
+    frame:SetScript("OnUpdate", function(self, elapsed)
+        if self:IsShown() and self.scanning then
+            self.flashTimer = self.flashTimer + elapsed
+            if self.flashTimer > self.flashSpeed then
+                self.flashTimer = 0
+                self.flashState = not self.flashState
+                
+                if self.flashState then
+                    powerText:SetAlpha(1.0)
+                else
+                    powerText:SetAlpha(0.3)
+                end
+            end
+        end
+    end)
     
-    local fadeIn = scanAnim:CreateAnimation("Alpha")
-    fadeIn:SetFromAlpha(0.3)
-    fadeIn:SetToAlpha(1)
-    fadeOut:SetDuration(0.5)
-    fadeIn:SetOrder(2)
+    -- Scanning functions
+    frame.StartScanning = function(self)
+        self.scanning = true
+        self.flashTimer = 0
+        self.flashState = true
+    end
     
-    -- Store references
-    frame.powerText = powerText
-    frame.nameText = nameText
-    frame.scanAnim = scanAnim
+    frame.StopScanning = function(self)
+        self.scanning = false
+        powerText:SetAlpha(1.0)
+    end
     
     -- Close button
     local closeButton = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
@@ -1447,6 +1485,10 @@ function DuelAnalyzer:CreateScouterFrame()
     frame.PlayBeep = function()
         PlaySoundFile(BEEP_SOUND, "Master")
     end
+    
+    -- Store references
+    frame.powerText = powerText
+    frame.nameText = nameText
     
     self.scouterFrame = frame
     return frame
@@ -1532,7 +1574,7 @@ function DuelAnalyzer:AnimatePowerLevel(targetPower, targetName)
     frame.powerText:SetText("SCANNING")
     
     -- Start scanning animation
-    frame.scanAnim:Play()
+    frame:StartScanning()
     
     -- Show the frame
     frame:Show()
@@ -1543,7 +1585,7 @@ function DuelAnalyzer:AnimatePowerLevel(targetPower, targetName)
     -- Schedule power level reveal
     C_Timer.After(2.5, function()
         -- Stop scanning animation
-        frame.scanAnim:Stop()
+        frame:StopScanning()
         
         -- Initial power level
         frame.powerText:SetText(math.floor(startPower))
@@ -1602,7 +1644,7 @@ function DuelAnalyzer:ShowScouter(unit)
     self:AnimatePowerLevel(powerLevel, name)
 end
 
--- Modified AnalyzeTooltipUnit function
+-- AnalyzeTooltipUnit function with DBZ Scouter style
 function DuelAnalyzer:AnalyzeTooltipUnit(unit)
     -- Don't analyze non-players or yourself
     if not unit or not UnitIsPlayer(unit) or UnitIsUnit(unit, "player") then return end
@@ -1611,30 +1653,25 @@ function DuelAnalyzer:AnalyzeTooltipUnit(unit)
     local name = UnitName(unit)
     if not name then return end
     
-    -- Get basic information
-    local _, playerClass = UnitClass("player")
-    local _, opponentClass = UnitClass(unit)
-    local playerLevel = UnitLevel("player") or 0
-    local opponentLevel = UnitLevel(unit) or 0
-    local levelDifference = playerLevel - opponentLevel
+    -- Store reference to current unit for click detection
+    self.currentTooltipUnit = unit
     
-    -- Calculate win chance
-    local winChance = 50
-    
-    -- Class matchup adjustment
-    if matchupData and matchupData[playerClass] and matchupData[playerClass][opponentClass] then
-        winChance = matchupData[playerClass][opponentClass]
+    -- Check if DBZ Scouter style is enabled
+    if DuelAnalyzerDB and DuelAnalyzerDB.settings and DuelAnalyzerDB.settings.scouterStyle then
+        -- DBZ Scouter Style
+        self:AddScouterTooltip(unit)
+    else
+        -- Regular Style
+        self:AddRegularTooltip(unit)
     end
+end
+
+-- Function for regular tooltip style
+function DuelAnalyzer:AddRegularTooltip(unit)
+    local name = UnitName(unit)
     
-    -- Level difference gives a big advantage
-    if levelDifference > 0 then
-        winChance = winChance + (levelDifference * 3)
-    elseif levelDifference < 0 then
-        winChance = winChance + (levelDifference * 3)
-    end
-    
-    -- Make sure win chance is between 1-99%
-    winChance = math.min(99, math.max(1, winChance))
+    -- Get quick win chance calculation
+    local winChance, baseChance, specMod, gearMod, historyMod = self:QuickWinChance(unit)
     
     -- Format text color for win chance
     local chanceColor = "FFFFFF"
@@ -1646,19 +1683,12 @@ function DuelAnalyzer:AnalyzeTooltipUnit(unit)
         chanceColor = "FF0000" -- Red for poor chance
     end
     
-    -- Add tooltip lines in DBZ Scouter style
+    -- Add tooltip lines
     GameTooltip:AddLine(" ")
-    GameTooltip:AddLine("|cFFFF6600Scouter Analysis:|r")
+    GameTooltip:AddLine("|cFF00FF00[Duel Analyzer]|r")
     GameTooltip:AddLine("Win Chance: |cff" .. chanceColor .. winChance .. "%|r")
     
-    -- Add level difference
-    if levelDifference ~= 0 then
-        local levelColor = (levelDifference > 0) and "00FF00" or "FF0000"
-        local levelText = (levelDifference > 0) and "+" .. levelDifference or levelDifference
-        GameTooltip:AddLine("Level Difference: |cff" .. levelColor .. levelText .. "|r")
-    end
-    
-    -- Add duel history if available
+    -- Add history if available
     if duelHistory and duelHistory[name] then
         local history = duelHistory[name]
         local wins = history.wins or 0
@@ -1675,107 +1705,17 @@ function DuelAnalyzer:AnalyzeTooltipUnit(unit)
             GameTooltip:AddLine("History: |cff" .. historyColor .. wins .. "-" .. losses .. " (" .. winRate .. "%)|r")
         end
     end
-    
-    -- Add scouter instruction
-    GameTooltip:AddLine(" ")
-    GameTooltip:AddLine("|cFFFF6600Click to scan with DBZ Scouter!|r")
-    
-    -- Store reference to current unit
-    self.currentTooltipUnit = unit
-    
-    -- Show the tooltip
-    GameTooltip:Show()
 end
 
--- Create a tooltip click handler
-local tooltipClickDetector = CreateFrame("Frame", "DuelAnalyzerTooltipDetector")
-tooltipClickDetector:SetScript("OnUpdate", function(self)
-    -- Check if GameTooltip is shown and mouse button is pressed
-    if GameTooltip:IsShown() and DuelAnalyzer.currentTooltipUnit and IsMouseButtonDown("LeftButton") then
-        local x, y = GetCursorPosition()
-        local scale = GameTooltip:GetEffectiveScale()
-        local left, bottom, width, height = GameTooltip:GetRect()
-        
-        -- Convert cursor position to same scale as tooltip
-        x = x / scale
-        y = y / scale
-        
-        -- Check if cursor is over tooltip
-        if x >= left and x <= (left + width) and y >= bottom and y <= (bottom + height) then
-            -- Show scouter for current tooltip unit
-            DuelAnalyzer:ShowScouter(DuelAnalyzer.currentTooltipUnit)
-            
-            -- Hide tooltip
-            GameTooltip:Hide()
-            
-            -- Wait a bit before checking again to prevent multiple activations
-            self:SetScript("OnUpdate", nil)
-            C_Timer.After(1, function()
-                self:SetScript("OnUpdate", self:GetScript("OnUpdate"))
-            end)
-        end
-    end
-end)
-
--- Modify AnalyzeTooltipUnit function to add the DBZ scouter style
-function DuelAnalyzer:AnalyzeTooltipUnit(unit)
-    -- Don't analyze non-players or yourself
-    if not unit or not UnitIsPlayer(unit) or UnitIsUnit(unit, "player") then return end
-    
-    -- Get opponent name
+-- Function for DBZ Scouter tooltip style
+function DuelAnalyzer:AddScouterTooltip(unit)
     local name = UnitName(unit)
-    if not name then return end
     
-    -- Get basic information
-    local _, playerClass = UnitClass("player")
-    local _, opponentClass = UnitClass(unit)
-    local playerLevel = UnitLevel("player") or 0
-    local opponentLevel = UnitLevel(unit) or 0
-    local levelDifference = playerLevel - opponentLevel
+    -- Get quick win chance
+    local winChance = select(1, self:QuickWinChance(unit))
     
-    -- Calculate win chance
-    local winChance = 50
-    
-    -- Class matchup adjustment
-    if matchupData and matchupData[playerClass] and matchupData[playerClass][opponentClass] then
-        winChance = matchupData[playerClass][opponentClass]
-    end
-    
-    -- Level difference gives a big advantage
-    if levelDifference > 0 then
-        winChance = winChance + (levelDifference * 3)
-    elseif levelDifference < 0 then
-        winChance = winChance + (levelDifference * 3)
-    end
-    
-    -- Make sure win chance is between 1-99%
-    winChance = math.min(99, math.max(1, winChance))
-    
-    -- Get a basic gear score estimate
-    local opponentGearScore = 0
-    
-    -- Check a few key slots for a rough estimate
-    local keySlots = {1, 5, 7, 16} -- Head, Chest, Legs, Weapon
-    local itemCount = 0
-    
-    for _, slot in ipairs(keySlots) do
-        local itemLink = GetInventoryItemLink(unit, slot)
-        if itemLink then
-            local _, _, _, itemLevel = GetItemInfo(itemLink)
-            if itemLevel then
-                opponentGearScore = opponentGearScore + itemLevel
-                itemCount = itemCount + 1
-            end
-        end
-    end
-    
-    -- Calculate average item level
-    if itemCount > 0 then
-        opponentGearScore = math.floor(opponentGearScore / itemCount)
-    else
-        -- If we couldn't see any gear, make a guess based on level
-        opponentGearScore = opponentLevel * 5
-    end
+    -- Calculate Power Level (based on gear and level)
+    local powerLevel = self:CalculatePowerLevel(unit)
     
     -- Format text color for win chance
     local chanceColor = "FFFFFF"
@@ -1790,27 +1730,6 @@ function DuelAnalyzer:AnalyzeTooltipUnit(unit)
     -- Add tooltip lines in DBZ Scouter style
     GameTooltip:AddLine(" ")
     GameTooltip:AddLine("|cFFFF6600Click to scan with DBZ Scouter!|r")
-
-
-    
-    -- Calculate Power Level (based on gear and level)
-    local powerLevel = opponentGearScore
-    
-    -- Adjust power level based on level difference
-    if levelDifference ~= 0 then
-        local levelFactor = 1 + (levelDifference * 0.05)
-        powerLevel = powerLevel / levelFactor
-    end
-    
-    -- Add class modifier (some classes are naturally stronger in DBZ lore)
-    if opponentClass == "WARRIOR" or opponentClass == "DEATHKNIGHT" then
-        powerLevel = powerLevel * 1.1 -- Strong melee classes
-    elseif opponentClass == "MAGE" or opponentClass == "WARLOCK" then
-        powerLevel = powerLevel * 1.05 -- Strong caster classes
-    end
-    
-    -- Round power level
-    powerLevel = math.floor(powerLevel)
     
     -- Add the "Power Level" line
     if powerLevel > 9000 then
@@ -1821,43 +1740,115 @@ function DuelAnalyzer:AnalyzeTooltipUnit(unit)
     
     -- Add win chance as "Battle Prediction"
     GameTooltip:AddLine("Battle Prediction: |cff" .. chanceColor .. winChance .. "% Victory Chance|r")
-    
-    -- Add level difference as "Combat Level"
-    if math.abs(levelDifference) > 0 then
-        local levelColor = (levelDifference > 0) and "00FF00" or "FF0000"
-        local levelText = (levelDifference > 0) and "+" .. levelDifference or levelDifference
-        GameTooltip:AddLine("Combat Level: |cff" .. levelColor .. levelText .. "|r")
-    end
-    
-    -- Add duel history as "Battle Record" if available
-    if duelHistory and duelHistory[name] then
-        local history = duelHistory[name]
-        local wins = history.wins or 0
-        local losses = history.losses or 0
-        
-        if wins + losses > 0 then
-            local winRate = math.floor((wins / (wins + losses)) * 100)
-            local historyColor = "FFFFFF"
-            
-            if winRate > 60 then historyColor = "00FF00"
-            elseif winRate < 40 then historyColor = "FF0000"
-            end
-            
-            GameTooltip:AddLine("Battle Record: |cff" .. historyColor .. wins .. "W - " .. losses .. "L (" .. winRate .. "%)|r")
-        end
-    end
-    
-    -- Show it
-    GameTooltip:Show()
 end
+
+-- Clear current tooltip unit when tooltip hides
+GameTooltip:HookScript("OnHide", function()
+    DuelAnalyzer.currentTooltipUnit = nil
+end)
+
+-- Make the tooltip clickable with a frame overlay
+local tooltipFrame = CreateFrame("Frame", "DuelAnalyzerTooltipFrame")
+tooltipFrame:EnableMouse(true)
+tooltipFrame:SetScript("OnMouseDown", function(self, button)
+    if button == "LeftButton" and DuelAnalyzer.currentTooltipUnit then
+        -- Show scouter for current tooltip unit
+        DuelAnalyzer:ShowScouter(DuelAnalyzer.currentTooltipUnit)
+        -- Hide tooltip
+        GameTooltip:Hide()
+    end
+end)
+
+local function UpdateTooltipFrame()
+    if GameTooltip:IsShown() and DuelAnalyzer.currentTooltipUnit then
+        tooltipFrame:SetParent(GameTooltip)
+        tooltipFrame:ClearAllPoints()
+        tooltipFrame:SetAllPoints(GameTooltip)
+        tooltipFrame:SetFrameStrata("TOOLTIP")
+        tooltipFrame:SetFrameLevel(GameTooltip:GetFrameLevel() + 1)
+        tooltipFrame:Show()
+    else
+        tooltipFrame:Hide()
+    end
+end
+
+local alreadyHooked = false
+GameTooltip:HookScript("OnTooltipSetUnit", function(self)
+    if alreadyHooked then return end
+    alreadyHooked = true
+    
+    local _, unit = self:GetUnit()
+    if unit and DuelAnalyzerDB and DuelAnalyzerDB.settings and DuelAnalyzerDB.settings.showTooltip then
+        DuelAnalyzer:AnalyzeTooltipUnit(unit)
+        C_Timer.After(0, UpdateTooltipFrame)
+    end
+    
+    C_Timer.After(0.1, function() alreadyHooked = false end)
+end)
+
+
+-- Debug function to test if the scouter is working properly
+function DuelAnalyzer:DebugScouter()
+    print("|cFF00FF00[Duel Analyzer]|r Starting scouter debug test...")
+    
+    -- Check if scouter.tga exists by trying to create a texture
+    local texturePath = "Interface\\AddOns\\DuelAnalyzer\\scouter.tga"
+    local testTexture = UIParent:CreateTexture(nil, "ARTWORK")
+    testTexture:SetTexture(texturePath)
+    
+    -- Short delay to let texture load
+    C_Timer.After(0.5, function()
+        -- Check if texture loaded
+        if testTexture:GetTexture() then
+            print("|cFF00FF00[Duel Analyzer]|r Scouter texture found at: " .. texturePath)
+        else
+            print("|cFFFF0000[Duel Analyzer]|r Scouter texture NOT found at: " .. texturePath)
+            print("|cFFFF0000[Duel Analyzer]|r Make sure you have a file named 'scouter.tga' in your DuelAnalyzer folder")
+            print("|cFFFF0000[Duel Analyzer]|r Will use fallback texture instead")
+        end
+        
+        -- Clean up test texture
+        testTexture:SetTexture(nil)
+        
+        -- Create the scouter frame if it doesn't exist
+        if not self.scouterFrame then
+            print("|cFF00FF00[Duel Analyzer]|r Creating scouter frame...")
+            self:CreateScouterFrame()
+        else
+            print("|cFF00FF00[Duel Analyzer]|r Scouter frame already exists")
+        end
+        
+        -- Display a test scouter
+        print("|cFF00FF00[Duel Analyzer]|r Displaying test scouter...")
+        self:AnimatePowerLevel(8500, "Debug Test")
+    end)
+    
+    return true
+end
+
+-- Simplified tooltip click detection
+GameTooltip:HookScript("OnMouseDown", function(self, button)
+    if button == "LeftButton" and DuelAnalyzer.currentTooltipUnit then
+        -- Show scouter for current tooltip unit
+        DuelAnalyzer:ShowScouter(DuelAnalyzer.currentTooltipUnit)
+        -- Hide tooltip
+        self:Hide()
+    end
+end)
 
 -- Hook into GameTooltip to add analysis
 GameTooltip:HookScript("OnTooltipSetUnit", function(self)
     local _, unit = self:GetUnit()
-    if unit then
+    if unit and DuelAnalyzerDB and DuelAnalyzerDB.settings and DuelAnalyzerDB.settings.showTooltip then
         DuelAnalyzer:AnalyzeTooltipUnit(unit)
     end
 end)
+
+-- Add slash command for testing the scouter
+SLASH_SCOUTERTEST1 = "/scoutertest"
+SlashCmdList["SCOUTERTEST"] = function(msg)
+    DuelAnalyzer:DebugScouter()
+end
 
 -- Slash command handler
 SLASH_DUELANALYZER1 = "/danalyzer"
@@ -1890,6 +1881,25 @@ SlashCmdList["DUELANALYZER"] = function(msg)
             DuelAnalyzerDB.settings.showTooltip = false
             print("|cFF00FF00[Duel Analyzer]|r Tooltips disabled")
         end
+    elseif command == "scouter" then
+        -- Toggle scouter style
+        if not DuelAnalyzerDB.settings.scouterStyle then
+            DuelAnalyzerDB.settings.scouterStyle = true
+            print("|cFF00FF00[Duel Analyzer]|r Scouter style enabled! It's over 9000!")
+            
+            -- Show a test scouter
+            DuelAnalyzer:AnimatePowerLevel(9001, "Test Scouter")
+        else
+            DuelAnalyzerDB.settings.scouterStyle = false
+            print("|cFF00FF00[Duel Analyzer]|r Scouter style disabled")
+        end
+    elseif command == "scan" and UnitExists("target") then
+        -- Added direct command to scan current target
+        local name = UnitName("target")
+        if name then
+            local powerLevel = DuelAnalyzer:CalculatePowerLevel("target")
+            DuelAnalyzer:AnimatePowerLevel(powerLevel, name)
+        end
     elseif command == "analyze" and rest ~= "" then
         -- Manual analysis of a specific player
         local targetName = rest
@@ -1909,15 +1919,6 @@ SlashCmdList["DUELANALYZER"] = function(msg)
         else
             print("|cFF00FF00[Duel Analyzer]|r No target selected. Please target a player first.")
         end
-    elseif command == "scouter" then
-        -- Toggle scouter style
-        if not DuelAnalyzerDB.settings.scouterStyle then
-            DuelAnalyzerDB.settings.scouterStyle = true
-            print("|cFF00FF00[Duel Analyzer]|r Scouter style enabled! It's over 9000!")
-        else
-            DuelAnalyzerDB.settings.scouterStyle = false
-            print("|cFF00FF00[Duel Analyzer]|r Scouter style disabled")
-        end
     else
         -- Show help
         print("|cFF00FF00Duel Analyzer Commands:|r")
@@ -1930,6 +1931,9 @@ SlashCmdList["DUELANALYZER"] = function(msg)
         print("/danalyzer track - Toggle history tracking")
         print("/danalyzer tooltip - Toggle tooltips")
         print("/danalyzer reset - Reset all duel history")
+        print("/danalyzer scouter - Toggle DBZ Scouter style")
+        print("/danalyzer scan - Scan current target with DBZ Scouter")
+        print("/scoutertest - Test the DBZ Scouter functionality")
     end
 end
 

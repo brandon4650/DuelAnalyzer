@@ -1,0 +1,8 @@
+## Interface: 50413
+## Title: Duel Analyzer
+## Notes: Analyzes duel opponents and predicts your chance of winning
+## Author: Your Name
+## Version: 1.0
+## SavedVariables: DuelAnalyzerDB
+
+DuelAnalyzer.lua

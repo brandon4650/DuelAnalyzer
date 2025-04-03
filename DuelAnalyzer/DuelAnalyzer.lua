@@ -204,13 +204,7 @@ function DuelAnalyzer:OnLoad()
         end
     end)
     
-    -- Hook GameTooltip
-    GameTooltip:HookScript("OnTooltipSetUnit", function(self)
-        local _, unit = self:GetUnit()
-        if unit and DuelAnalyzerDB and DuelAnalyzerDB.settings and DuelAnalyzerDB.settings.showTooltip then
-            DuelAnalyzer:AnalyzeTooltipUnit(unit)
-        end
-    end)
+
 end
 
 function DuelAnalyzer:ClearTooltipCache()
@@ -1759,32 +1753,8 @@ tooltipFrame:SetScript("OnMouseDown", function(self, button)
     end
 end)
 
-local function UpdateTooltipFrame()
-    if GameTooltip:IsShown() and DuelAnalyzer.currentTooltipUnit then
-        tooltipFrame:SetParent(GameTooltip)
-        tooltipFrame:ClearAllPoints()
-        tooltipFrame:SetAllPoints(GameTooltip)
-        tooltipFrame:SetFrameStrata("TOOLTIP")
-        tooltipFrame:SetFrameLevel(GameTooltip:GetFrameLevel() + 1)
-        tooltipFrame:Show()
-    else
-        tooltipFrame:Hide()
-    end
-end
 
-local alreadyHooked = false
-GameTooltip:HookScript("OnTooltipSetUnit", function(self)
-    if alreadyHooked then return end
-    alreadyHooked = true
-    
-    local _, unit = self:GetUnit()
-    if unit and DuelAnalyzerDB and DuelAnalyzerDB.settings and DuelAnalyzerDB.settings.showTooltip then
-        DuelAnalyzer:AnalyzeTooltipUnit(unit)
-        C_Timer.After(0, UpdateTooltipFrame)
-    end
-    
-    C_Timer.After(0.1, function() alreadyHooked = false end)
-end)
+
 
 
 -- Debug function to test if the scouter is working properly
@@ -1836,13 +1806,7 @@ GameTooltip:HookScript("OnMouseDown", function(self, button)
     end
 end)
 
--- Hook into GameTooltip to add analysis
-GameTooltip:HookScript("OnTooltipSetUnit", function(self)
-    local _, unit = self:GetUnit()
-    if unit and DuelAnalyzerDB and DuelAnalyzerDB.settings and DuelAnalyzerDB.settings.showTooltip then
-        DuelAnalyzer:AnalyzeTooltipUnit(unit)
-    end
-end)
+
 
 -- Add slash command for testing the scouter
 SLASH_SCOUTERTEST1 = "/scoutertest"
@@ -1936,6 +1900,105 @@ SlashCmdList["DUELANALYZER"] = function(msg)
         print("/scoutertest - Test the DBZ Scouter functionality")
     end
 end
+
+-- CLEAN SINGLE TOOLTIP IMPLEMENTATION
+-- Variable to track if we've already processed this tooltip
+DuelAnalyzer.processedTooltip = nil
+
+-- Single tooltip hook
+GameTooltip:HookScript("OnTooltipSetUnit", function(self)
+    local _, unit = self:GetUnit()
+    
+    -- Only process if tooltips are enabled
+    if not (unit and DuelAnalyzerDB and DuelAnalyzerDB.settings and DuelAnalyzerDB.settings.showTooltip) then
+        return
+    end
+    
+    -- Don't analyze non-players or yourself
+    if not UnitIsPlayer(unit) or UnitIsUnit(unit, "player") then
+        return
+    end
+
+    -- Check if this is the same unit we already processed
+    if DuelAnalyzer.processedTooltip == unit then
+        return
+    end
+    
+    -- Mark as processed
+    DuelAnalyzer.processedTooltip = unit
+    DuelAnalyzer.currentTooltipUnit = unit
+    
+    -- Reset when the tooltip hides
+    self:HookScript("OnHide", function()
+        DuelAnalyzer.processedTooltip = nil
+        DuelAnalyzer.currentTooltipUnit = nil
+    end)
+    
+    -- Make tooltip clickable
+    self:SetScript("OnMouseDown", function(self, button)
+        if button == "LeftButton" and DuelAnalyzer.currentTooltipUnit then
+            DuelAnalyzer:ShowScouter(DuelAnalyzer.currentTooltipUnit)
+            self:Hide()
+        end
+    end)
+    
+    -- Calculate win chance
+    local name = UnitName(unit)
+    local winChance = select(1, DuelAnalyzer:QuickWinChance(unit))
+    
+    -- Format text color for win chance
+    local chanceColor = "FFFFFF"
+    if winChance >= 70 then
+        chanceColor = "00FF00" -- Green for good chance
+    elseif winChance >= 40 then
+        chanceColor = "FFFF00" -- Yellow for medium chance
+    else
+        chanceColor = "FF0000" -- Red for poor chance
+    end
+    
+    -- Check if DBZ Scouter style is enabled
+    if DuelAnalyzerDB.settings.scouterStyle then
+        -- Calculate Power Level
+        local powerLevel = DuelAnalyzer:CalculatePowerLevel(unit)
+        
+        -- Add DBZ Scouter style
+        self:AddLine(" ")
+        self:AddLine("|cFFFF6600Click to scan with DBZ Scouter!|r")
+        
+        -- Add the "Power Level" line
+        if powerLevel > 9000 then
+            self:AddLine("Power Level: |cFFFF0000OVER 9000!|r")
+        else
+            self:AddLine("Power Level: |cFFFF6600" .. powerLevel .. "|r")
+        end
+        
+        -- Add win chance as "Battle Prediction"
+        self:AddLine("Battle Prediction: |cff" .. chanceColor .. winChance .. "% Victory Chance|r")
+    else
+        -- Regular style
+        self:AddLine(" ")
+        self:AddLine("|cFF00FF00[Duel Analyzer]|r")
+        self:AddLine("Win Chance: |cff" .. chanceColor .. winChance .. "%|r")
+        
+        -- Add history if available
+        if duelHistory and duelHistory[name] then
+            local history = duelHistory[name]
+            local wins = history.wins or 0
+            local losses = history.losses or 0
+            
+            if wins + losses > 0 then
+                local winRate = math.floor((wins / (wins + losses)) * 100)
+                local historyColor = "FFFFFF"
+                
+                if winRate > 60 then historyColor = "00FF00"
+                elseif winRate < 40 then historyColor = "FF0000"
+                end
+                
+                self:AddLine("History: |cff" .. historyColor .. wins .. "-" .. losses .. " (" .. winRate .. "%)|r")
+            end
+        end
+    end
+end)
 
 -- Initialize the addon
 DuelAnalyzer:OnLoad()
